@@ -1,0 +1,921 @@
+---
+title: Causal Inference Final Project
+subtitle: CBPS and Entropy Balancing - A simulation Study
+author: Chansoo Song
+date: "`r format(Sys.time(), '%B %Y')`"
+header-includes:
+    - \usepackage{amsmath}
+    - \usepackage{float}
+output: pdf_document
+---
+
+```{r rmd, message=FALSE,include=FALSE,warning=FALSE}
+rm(list=ls())
+library(arm)
+library(cobalt)
+library(ggplot2)
+library(rlang)
+library(RColorBrewer)
+library(stats)
+library(Hmisc)
+library(dplyr)
+library(MatchIt)
+library(reshape2)
+library(knitr)
+library(MatchIt)
+library(CBPS)
+library(ebal)
+library(gridExtra)
+library(grid)
+library(ggplot2)
+library(lattice)
+library(WeightIt)
+library(ggpubr)
+
+# Set global ggplot theme
+theme_set(theme_minimal())
+# Define global color palettes
+col.RdBl.2 <- brewer.pal(3, 'RdBu')[-2]
+```
+
+```{r include = FALSE}
+opts_chunk$set(tidy = FALSE)
+load(file='sim_study_plots.RDATA')
+```
+
+## Motivation:
+
+A key challenge in the application of propensity scores for matching is that the propensity score is unknown and must be estimated. To make matters worse, slight misspecification of the propensity score model can lead to substantial biases in treatment effects. This has led to researchers iteratively re-estimating the propensity score model, subsequently checking the resulting covariate balance, then repeating over and over until they are satisfied. Imai et al (2008)[^1] calls this the 'propensity score tautology': the estimated propensity score is appropriate if it balances covariates.
+
+[^1]: Imai, K., King, G. and Stuart, E. A. (2008)
+
+In this simulation study, I analyze two approaches that seek to bypass this 'propensity score tautology': Covariate Balancing Propensity Score and Entropy Balancing. Each method obviates the need for iteratively re-estimating the propensity score model and checking balance on the covariate moments. That is, a single model is used to estimate both the treatment assignment mechanism and the covariate balancing weights.
+
+## Matching, Propensity Scores and Assumptions:
+
+In an observational study setting where the confounding covariates (variables correlated with both treatment and outcome) are known and measured, we may use matching methods to ensure that there is sufficient overlap and balance on these covariates. Then, we can estimate the treatment effect using a simple difference in means or regression methods. 
+
+**Overlap** is important because we want to make sure that for each treated or control subject in the study, there exists an empirical counterfactual (this criteria varies depending on the estimand of interest, i.e. to estimate the ATT it is sufficient to have empirical counterfactuals for just the treated subjects in the study). **Balance** on the covariates is important because imbalance would force us to rely more on the correct functional form of the model.
+
+There are many different matching methods, but the driving principle is to identify observations that are "most similar", based on some distance metric. Methods include K-nearest-neighbor, caliper-matching, kernel-matching, Mahalanobis matching, Genetic Matching, Optimal Matching.
+
+A **propensity score** is a one-number summary of the covariates. Rosenbaum and Rubin (1983) define the propensity score for participant i as the conditional probability of treatment assignment $(Z_{i} = 1)$ given a vector of observed covariates: $e(X_{i}) = Pr(Z_{i} = 1 | X)$. The most common traditional approaches to estimating the propensity score are logistic regression and probit regression. 
+
+If strong **ignorability** holds after conditioning on the propensity score, that is:
+
+$$y_{0},y_{1}\ \bot\  Z_{i}|e(X_{i}),\ 0 < e(X_{i}) < 1$$  
+Then we may obtain an unbiased estimate of the treatment effect by either matching or weighting using just the propensity score instead of the vector of covariates. 
+
+After using either matching, propensity scores, or both to obtain a subset of the data that exhibits sufficient overlap, simple mean differences or a linear regression using weights can be used to estimate the treatment effect (ATE, ATC, or ATT). In all cases, ignorability, sufficient overlap, appropriate specification of the propensity score model / good balance, and SUTVA [^2] are all important assumptions to obtain unbiased estimates of the treatment effect. 
+
+To summarize assumptions, propensity score and matching methods require that the **structural** assumptions of ignorability and SUTVA are met. And to a lesser degree make **parametric** assumptions: correct specification of the propensity score model. Theoretically, in some cases, sufficient overlap and balance may make the outcome estimation model robust to misspecification and thereby helps to relax the parametric assumptions.      
+
+[^2]: The Stable Unit Treatment Value Assumption (SUTVA) states that the potential outcomes are independent of the particular configuration of treatment assignment. That is, there are no diluting or concentrating effects. 
+
+## Describe the designs / estimators (the ONE technical part...):
+
+#### Covariate Balancing Propensity Score (CBPS):
+
+The CBPS exploits the dual characteristics of the propensity score as a covariate balancing score and the conditional probability of treatment assignment (Imai and Ratkovic (2012))[^3]. 
+
+[^3]: Imai, Kosuke, and Marc Ratkovic. (2014) 
+
+First, consider a commonly used model for estimating propensity scores: logistic regression (point of this part is to show the dual characteristics!):
+
+$$e_{B}(X_{i}) = \frac{exp(X_{i}^{T}\beta)}{1+exp(X_{i}^{T}\beta)}$$
+
+We typically estimate the unknown parameters by maximum likelihood:
+
+$$\hat{\beta}_{MLE} = \arg \max_{\beta} \sum_{i=1}^{N}Z_{i}\ log\{e_{B}(X_{i})\ + (1-Z_{i})\ log\{1-e_{B}(X_{i})\} $$
+And we get the ML estimates by differentiating the log likelihood with respect to the parameters then setting the derivative to zero. So differentiating with respect to $\beta$, we get:
+
+$$\frac{1}{N}\sum_{i=1}^{N} \frac{Z_i\ e'_{B}(X_{i})}{e_{B}(X_{i})} - \frac{(1-Z_i)\ e'_{B}(X_{i})}{1-e_{B}(X_{i})}$$
+Then, they operationalize the covariate balancing property by using inverse propensity score weighting:
+
+$$E\left\{ \frac{Z_i\ \tilde{X_{i}}}{e_{B}(X_{i})} - \frac{(1-Z_i)\tilde{X_{i}}}{1-e_{B}(X_{i})} \right\} = 0$$ 
+where $\tilde{X_i} = f(X_i)$, a function of $X_i$ specified by the researcher. **Which happens to look a lot like the difference between treatment weights and control weights under inverse propensity score weighting (IPSW)!** (If we substitute $Y_i$ for $\tilde{X_i}$, we get exactly the difference between the inverse propensity score weighted treated and control outcomes.) The inverse propensity score weights are used to make the treated group "look like" the control group. And here, the weighting provides a condition that balances a particular function of covariates (i.e. the mean or variance). Setting $\tilde{X_i} = e'_{B}(X_{i})$ gives more weights to covariates that are predictive of treatmeent assignment according to the logistic regression propensity score model. But so long as the expectaion exists, the equation must hold for any choice of f(.). For example, setting $\tilde{X_i} = X_i$ ensures the first moment of each covariate is balanced. Setting $\tilde{X_i} = (X_{i}^TX_i^{2T})^T$ ensures the first and second moment of each covariate is balanced. Hence, we've established the "dual" characteristics of the propensity score as a covariate balancing score and conditional probability of assignment. 
+
+To estimate the CBPS, Imai uses the GMM or EL framework. For more details please see Imai and Ratkovic (2014).
+
+#### Entropy Balancing:
+
+Entropy balancing similarly involves a reweighting scheme that directly incorporates covariate balance into the weight function (Heinmueller 2015)[^4]. To do this, entropy balancing searches for a set of weights that satisfies the balance constraints, while trying to keep the distribution of weights as uniform as possible (i.e. minimizing the divergence of distribution of weights from a uniform distribution). Thus, entropy balancing (1) allows us to obtain a high degree of covariate balance (using balance constraints that can involve the first, second, and possibly higher moments of the covariate distributions as well as interactions). And (2) allows for a more flexible reweighting scheme that seeks to retain as much information as possible. For example, nearest neighbor matching may discard subjects that are not matched (i.e. set weight equal to 0). 
+
+[^4]: Hainmueller, Jens. 2012.
+
+Consider the reweighting scheme to estimate the Average Treatment Effect on the Treated (ATT). We would want to estimate the counterfactual mean by:
+
+$$E[\widehat{Y(0)|Z=1}] = \frac{\sum_{i|Z=0}Y_iw_i}{\sum_{i|Z=0}w_i}$$
+where $w_i$ is a weight for each control unit.
+
+The weights are chosen by the following reweighting scheme:
+
+$$H(w) = \sum_{i|D=0}h(w_i) $$
+where $h(.)$ is a distance metric and $c_{ri}(X_i) = m_r$ describes a set of R balance constraints imposed on the covariate moments of the reweighted control group. 
+
+Minimize $H(w)$ subject to the balance and normalizing constraints:
+
+$$\sum_{i|D=0} w_ic_{ri}(X_i) = m_r$$
+with $r$ $\in$ $1,..., r$
+
+$$\sum_{i|Z=0}w_i = 1$$
+and $w_i \geq 0$ for all $i$ such that $T = 0$.
+
+#### Comparison and implementation:
+
+Both methods may be used to estimate either the ATT, ATC, or the ATT, and the two methods are very similar. The key difference is that entropy balancing bypasses the 'propensity score tautology' by ignoring the propensity score model estimation step. Instead, it looks for weights that achieve the best balance, subject to a constraint that seeks to retain as much information in the data as possible. In contrast, covariate balancing directly exploits the dual characteristic to estimate propensity scores AND balance covariates simultaneously. 
+
+For implementation, I use the 'ebal' and 'CBPS' packages in R to implement Entropy Balancing and Covariate Balancing Propensity Score, respectively.
+
+## Simulation Set Up:
+
+#### Features:
+
+In this section, I examine whether the CBPS or Entropy Balancing methods improve upon the performance of baseline approaches to both (1) achieving balanced covariates and (2) estimating the treatment effect. The baseline approach estimates include (1) propensity scores using logistic regression and matches using 1-1 matching with replacement and (2) mahalanobis matching with replacement. 
+
+Though ignorability may be the most crucial assumption, I assume that all of the confounders are known to the researcher for all simulations. I believe that testing the sensitivity to the ignorability assumption would be more interesting when comparing propensity score and matching methods to other causal inference models. Since the authors of CBPS and EB claim that these models are less dependent on correctly specification compared to traditional propensity score approaches, I'm most interested in: 
+
+(1) reliance on the correct specification of the propensity score model
+(2) reliance on the correct specification of the outcome model
+(3) reliance on the ellipsoidally symmetric shape of covariate distributions
+
+It's clear from earlier discussion why reliance on correct specification is important. I add feature (3) because Mahalanobis distance and propensity score matching may make balance worse if the covariates are not EPBR (equal percent bias reducing). But both methods are equal percent bias reducing if all of the covariates used have ellipsoidal distributions (e.g. multivariate normal). [^5]
+
+[^5]: Diamond, A. and Sekhon, J. (2012) and Rubin (1976)
+
+#### Estimand: 
+
+The estimand of interest is the ATT: Average Effect of Treatment on the Treated. The ATT tells us how much the treatment affected the group of subjects that receieved treatment. We estimate the ATT by comparing the observed outcomes to the counterfactual outcomes that we would have measured had this group of subjects not received treatment. But since we are not able to observe this counterfactual state, we match each of these treated individuals to a control subject. In general, since the treatment group usually represents a specific subset of the general population, we would expect that the range of each covariate on the treated are a subset of the range of the respective covariate on the general population as well. Then, if there is sufficient overlap, it makes sense to try to use matching and propensity score techniques to achieve good balance. On the otherhand, estimating the effect on the control may be a much greater challenge. In general, we would face the challenge of matching a control subject with a treated subject. Though there may be exceptions, most studies are concerned with a specific treatment on a specific group of people. There would be a higher risk of overlap issues that would prevent extrapolating inferences based on this specific subset to entirely different groups of people.
+
+#### DGPs and other simulation parameters:
+
+I consider four data generating processes: 
+
+| DGP | Incl. Count Covariates | Linear Propensity Score Model |
+|------:|:-------|:------:|
+| 1 | 0 | 1 |
+| 2 | 0 | 0 |
+| 3 | 1 | 1 |
+| 4 | 1 | 0 |
+
+(1) Standard Normally Distributed Covariates: 
+    The pre-treatment covariates $X_i = (X_{i1},X_{i2},X_{i3},X_{i4})$ are four independent and identically distributed random variables following a standard normal distribution. The true propensity score model is a logistic regression whose linear predictor is a linear transform of the pre-treatment covariates.  
+
+(2) Standard Normally Distributed Covariates (non-linear propensity score model):
+    The pre-treatment covariates are the same as Simulation #1; however, the true propensity score model is a logistic regression whose linear predictor are non-linear transforms of the pre-treatment covariates: $X_i^* = (-exp(X_{i1}/2), - X_{i2}/(1+exp(X_{i1})), X_{i3}, - sqrt(X_{i4}^2))$
+
+(3) Standard Normally Distributed Covariates + 3 count covariates:
+    The pre-treatment covariates $X_i = (X_{i1},X_{i2},X_{i3},X_{i4},X_{i5},X_{i6},X_{i7})$ consist of four independent and identically distributed random variables following a standard normal distribution, a random variable following a poisson distribution with $\lambda = 1$, the negative values of a random variable following a binomial distribution with $n = 3$ and $p = 0.8$, and a random variable following a chi-squared distribution with $df = 1$.  
+
+(4) Standard Normally Distributed Covariates + 3 count covariates (non-linear propensity score model):
+    The pre-treatment covariates are the same as Simulation (5); however, the true propensity score model is a logistic regression whose linear predictor are non-linear transforms of the pre-treatment covariates: $X_i^* = (0.5*exp(X_{i1}/2),\ X_{i2}/(1+exp(X_{i1})),\ -.2*X_{i3}^2,\ X_{i1}*X_{i4},\ -0.4*sqrt(X_{i5}-X_{i6}),\  0.2*(X_{i1}+1.2*X_{i6})^2,\ 0.5*X_{i7})$
+
+I run each DGP twice, for a total of 8 simulations. For the first set of four simulations, the true outcome model is a linear regression with the pre-treatment covariates as predictors. For the second set of four simulations, the true outcome model is a linear regression with non-linear transformations of the pre-treatment covariates as predictors. I use the following non-linear model:
+
+$$y_i = x_1^2 + x_1x_2 + x_3^2 + \sqrt{x_4}$$
+
+#### Matching Methods
+
+Here, I briefly review the baseline models, then the specific specifications of the CBPS and EB models used in this simulation. For all six methods, the target estimand is the ATT and I match accordingly (that is, treated subjects receive weights equal to one and control subjects receive adjusted weights).
+
+1. Baseline: Propensity Score using Logistic Regression:
+2. Baseline: Mahalanobis Matching
+3. CBPS (1)
+4. CBPS (2)
+5. EB (1)
+6. EB (2)
+
+The first baseline model uses logistic regression (without any interactions or transformations) to estimate propensity scores. I match using 1-1 nearest neighbor matching using the propensity scores. 
+
+The second baseline model uses Mahalanobis matching. Mahalanobis calculates distance as $m^2 = (x_T - x_C)'\Sigma_{CR}^{-1}(x_t-x_C)$ and it is equivalent to Euclidean matching based on standardized and orthogonalized X. To estimate the ATT: for each treatment subject, I match with replacement the control subject with the smallest Mahalanobis distance. Mahalanobis was intended for use with multivariate normally distributed data. When some covariates exhibit extreme outliers or very skewed distributions, Mahalanobis distance will place less weight on that covariate. On the other hand, a binary variable with a .99 probability of one would have low standard deviation and the Mahalanobis distance would give greater weight to this variable.[^1] One way to address these concerns would be to use a rank-based Mahalanobis distance. For this simulation study, I use the standard Mahalanobis distance.
+
+[^1]: Lecture notes from our causal class + lecture notes from this stats class at Penn: "www-stat.wharton.upenn.edu/~dsmall/stat921-f09/handouts/notes14_stat921_f09.doc"
+
+The third and fourth models use CBPS: an over-identified model and a just-identified model. The over-identified model (#3) combines the propensity score AND covariate balancing conditions. The just-identified model (#4) only contains covariate balancing conditions.
+
+The fifth and sixth models use Entropy Balancing: one that achieves balance on just the first moment (#5) and one that achieves balance on both first and second moments (#6).
+
+#### ATT Estimation Method
+
+For all 6 models, I use a linear regression using (1) weights to reflect the restricted dataset of the corresponding mathing method and (2) all observed covariates (without any interactions or transformations) to estimate the ATT.
+
+
+## Simulations:
+
+```{r include = FALSE}
+# Samle size
+n = 1000
+n_sims = 1000
+
+# Models
+model_names = c('Baseline Logistic', 'Baseline Mahalanobis',
+                'CBPS - Over', 'CBPS - Just',
+                'EB - 1', 'EB - 2')
+dgp_names = c('std normally dist covs',
+              'std normally dist covs (non-linear ps model)',
+              'normally dist covs with unequal variances',
+              'normally dist covs with unequal variances (non-linear ps model)',
+              'std normally dist covs with 3 count covariates',
+              'std normally dist covs with 3 count covariates (non-linear ps model)',
+              'normally dist covs with unequal var and 3 count covs',
+              'normally dist covs with unequal var and 3 count covs (non-linear ps model)')
+wts = c('wt','wt_mh',
+        'wt.cbps_over','wt.cbps_just',
+        'wt.eb','wt.eb2')
+
+# Inverse Logit Function
+inv.logit = function (x) {
+  y = 1/(1+exp(-x))
+  return(y) 
+}
+
+
+df = list()
+SATE = list()
+confounders = list()
+for(i in 1:4) confounders[[i]] = paste('z',seq(1,4),sep='')
+for(i in 5:8) confounders[[i]] = paste('z',seq(1,7),sep='')
+```
+
+```{r include = FALSE}
+# Function to Generate Pre-Treatment Covariates
+dgp = function(n){
+  Z_ = list()
+  X_ = list()
+  
+  # Pre-Treatment covs
+  z1 = rnorm(n,  0, 1)
+  z2 = rnorm(n,  0, 1)
+  z3 = rnorm(n,  0, 1)
+  z4 = rnorm(n,  0, 1)
+  
+  # DGP 1: std normally dist covs
+  Z_[[1]] = cbind(z1, z2, z3, z4)
+  X_[[1]] = z1 + z2 + z3 + z4
+  
+  # DGP 2: std normally dist covs (non-linear ps model)
+  Z_[[2]] = cbind(z1, z2, z3, z4)
+  X_[[2]] = -exp(z1/2) - z2/(1+exp(z1)) + z3 - sqrt(z4^2)
+  
+  # Pre-Treatment covs
+  z1 = rnorm(n,  0, 0.5)
+  z2 = rnorm(n,  0, 0.9)
+  z3 = rnorm(n,  0, 1.1)
+  z4 = rnorm(n,  0, 1.2)
+  
+  # DGP 3: normally dist covs with unequal variances
+  Z_[[3]] = cbind(z1, z2, z3, z4)
+  X_[[3]] = z1 + z2 + z3 + z4
+  
+  # DGP 4: normally dist covs with unequal variances (non-linear ps model)
+  Z_[[4]] = cbind(z1, z2, z3, z4)
+  X_[[4]] = -exp(z1/2) - z2/(1+exp(z1)) + z3 - sqrt(z4^2)
+  
+  # Pre-Treatment covs
+  z1 = rnorm(n,  0, 1)
+  z2 = rnorm(n,  0, 1)
+  z3 = rnorm(n,  0, 1)
+  z4 = rnorm(n,  0, 1)
+  z5 = rpois(n, 1)
+  z6 = -rbinom(n, 3, 0.8)
+  z7 = rchisq(n, df=1)
+  
+  # DGP 5: std normally dist covs with 3 count covs
+  Z_[[5]] = cbind(z1, z2, z3, z4, z5, z6, z7)
+  X_[[5]] = z1 + z2 + z3 + z4 + z5 + z6 + z7
+  
+  # DGP 6: std normally dist covs with 3 count covs (non-linear ps model)
+  Z_[[6]] = cbind(z1, z2, z3, z4, z5, z6, z7)
+  X_[[6]] = 0.5*exp(z1/2) + z2/(1+exp(z1)) + -.2*z3^2 + z1*z4 - 
+            0.4*sqrt(z5-z6) - 0.2*(z1+1.2*z6)^2 + 0.5*z7
+
+  # Pre-Treatment covs
+  z1 = rnorm(n,  0, 0.5)
+  z2 = rnorm(n,  0, 0.9)
+  z3 = rnorm(n,  0, 1)
+  z4 = rnorm(n,  0, 1.1)
+  z5 = rpois(n, 1)
+  z6 = -rbinom(n, 2, 0.8)
+  z7 = rchisq(n, df=1)
+  
+  # DGP 7: normally dist covs with unequal vars and 3 count covs
+  Z_[[7]] = cbind(z1, z2, z3, z4, z5, z6, z7)
+  X_[[7]] = z1 + z2 + z3 + z4 + z5 + z6 + z7
+  
+  # DGP 8: normally dist covs with unequal vars and 3 count covs (non-linear ps model)
+  Z_[[8]] = cbind(z1, z2, z3, z4, z5, z6, z7)
+  X_[[8]] = 0.5*exp(z1/2) + z2/(1+exp(z1)) -.2*z3^2 + z1*z4 - 
+            0.4*sqrt(z5-z6) - 0.2*(z1+1.2*z6)^2 + 0.5*z7
+  
+  return(list(Z_,X_))
+}
+```
+
+```{r include = FALSE}
+# Function to simulate DGP given pre-treatment covariates
+sim_dgp = function(Z_=Z_[[1]], X_=X_[[1]], sim_no=1, n,
+                   B_=c(0.4,0.5,0.3,0.9), nlo=FALSE, dgp_name='dgp name here'){
+  
+  # Propensity Score
+  e_Z = inv.logit(X_)
+  
+  # Generate treatment vector
+  # treat = as.integer(e_Z>runif(n,0,1))
+  treat = rbinom(n,1,prob=e_Z)
+  
+  # Treatment Effect
+  eff = 4
+  
+  if(nlo==FALSE){
+    Z_2 = Z_  
+  }
+  
+  if(nlo==TRUE){
+    Z_2 = Z_
+    Z_2[1] = Z_[1]^2
+    Z_2[2] = Z_[2]*Z_[1]
+    Z_2[3] = Z_[3]^2
+    Z_2[4] = sqrt(Z_[4]^2)
+  }
+  
+  # Generate Potential Outcomes
+  y_0 = Z_2 %*% B_ + rnorm(n,0,1)
+  y_1 = Z_2 %*% B_ + eff + rnorm(n,0,1)
+  y = y_0*(1-treat) + y_1*treat
+  
+  
+  # Generate Researcher Dataset
+  df.temp = as.data.frame(cbind(y,y_1,y_0, e_Z, treat, Z_))
+  colnames(df.temp)[1:3] = c('y','y_1','y_0')
+  
+  return(df.temp)
+}
+```
+
+```{r density, eval=FALSE, include = FALSE}
+dgp_data = dgp(n)
+Z_ = dgp_data[[1]]
+X_ = dgp_data[[2]]
+
+b_4 = c(0.4,0.5,0.3,0.9)
+b_6 = c(0.4,0.5,0.3,0.9,0.1,1,0.3)
+B_ = list(b_4,b_4,b_4,b_4,b_6,b_6,b_6,b_6)
+          
+
+for(k in 1:8){
+  df[[k]] = sim_dgp(Z=Z_[[k]], X=X_[[k]], sim_no=k,
+                    n=n, B_=B_[[k]], dgp_name=dgp_names[k])
+  SATE[[k]] = mean(df[[k]]$y_1 - df[[k]]$y_0)
+  
+}
+
+# True Propensity Score Density
+true_prs_density = list()
+for(k in 1:4){
+  true_prs_density[[k]] = ggplot(df[[k]], aes(x=e_Z, group=treat, fill = as.factor(treat))) +
+    geom_density(alpha=.3) +
+    theme_gray() + 
+    labs(title = paste("Simulation",k),
+         subtitle = dgp_names[k],
+         caption = "Density of True PS") +
+    labs(fill = "Treat") +
+    theme(plot.title=element_text(size=8, hjust=0.5, face="bold", colour="maroon")) +
+    theme(plot.subtitle=element_text(size=6, face="italic", color="black"))
+}
+```
+
+```{r echo = FALSE}
+# grid.arrange(grobs=true_prs_density[1:4], ncol=2, nrow = 2)
+# grid.arrange(grobs=true_prs_density[5:8], ncol=2, nrow = 2)
+ggarrange(true_prs_density[[1]],true_prs_density[[2]],true_prs_density[[5]],true_prs_density[[6]], ncol=2, nrow=2, common.legend = TRUE, legend="bottom")
+```
+
+The above plots show the density of the true propensity score in treatment and control groups for each simulation. There is a misleading pattern: the linear propensity score models (#1 and #3) have strong separation, whereas the non-linear propensity score models (#2 and #4) show a platykurtic treatment distribution with positively skewed control density. However, this is totally arbitrary and is reflective of the specification of the true propensity score model. But this is ok because I'm interested in comparing the *relative* performances of the models *given* a simulation. 
+
+
+#### Estimate Weights
+
+```{r,  results='hide', warning=FALSE, eval=FALSE, include = FALSE}
+mod_match = mod_mahalo = cbps.over = cbps.just = eb.out = eb.out2 = list()
+
+for(k in 1:8){
+  formula = as.formula(paste('treat ~ ',paste(confounders[[k]],collapse=' + '),sep=''))
+  
+  #### (1)
+  
+  # Logistic Regression, 1-1 Matching
+  mod_match[[k]] = matchit(formula, 
+                           data = df[[k]][,c('treat',confounders[[k]])], 
+                           method = 'nearest', 
+                           distance = 'logit', 
+                           replace = TRUE)
+  df[[k]]$wt = mod_match[[k]]$weights
+  
+  #### (2)
+  
+  # Mahalanobis Distance Matching
+  mod_mahalo[[k]] = matchit(formula, 
+                            data = df[[k]][,c('treat',confounders[[k]])], 
+                            method = "nearest", 
+                            distance = "mahalanobis", 
+                            replace = TRUE)
+  df[[k]]$wt_mh = mod_mahalo[[k]]$weights
+  
+  #### (3)
+  
+  # CBPS Weights (OVER)
+  cbps.over[[k]]= weightit(formula, 
+                           data = df[[k]][,c('treat',confounders[[k]])], 
+                           method = "cbps", 
+                           estimand = "ATT", 
+                           over=TRUE)
+  df[[k]]$wt.cbps_over = cbps.over[[k]]$weights
+  
+  #### (4)
+  
+  # CBPS Weights (JUST)
+  cbps.just[[k]]= weightit(formula, 
+                           data = df[[k]][,c('treat',confounders[[k]])], 
+                           method = "cbps", 
+                           estimand = "ATT", 
+                           over=FALSE)
+  df[[k]]$wt.cbps_just = cbps.just[[k]]$weights
+  
+  #### (5)
+  # Entropy Balancing Weights 1
+  eb.out[[k]] = ebalance(Treatment = df[[k]]$treat, 
+                         X = df[[k]][,confounders[[k]]])
+  df[[k]]$wt.eb = 1
+  df[[k]][df[[k]]$treat == 0,'wt.eb'] = eb.out[[k]]$w  
+  
+  #### (6)
+  # Entropy Balancing Weights 2
+  eb.out2[[k]] = ebalance(Treatment = df[[k]]$treat, 
+                          X = cbind(df[[k]][,confounders[[k]]],
+                                    df[[k]][,confounders[[k]]]^2))
+  df[[k]]$wt.eb2 = 1
+  df[[k]][df[[k]]$treat == 0,'wt.eb2'] = eb.out2[[k]]$w  
+}
+
+```
+
+#### Examine Overlap of Propensity Score and Covariates (Before Matching)
+
+```{r loveplots1, message=FALSE, eval=FALSE, include = FALSE}
+love.plots=list()
+
+for(k in 1:8){
+  formula = as.formula(paste('treat ~ ',paste(confounders[[k]],collapse=' + '),sep=''))
+  love.plots[[k]] = love.plot(bal.tab(formula, 
+                          data = df[[k]][,c('treat',confounders[[k]])], 
+                          weights = data.frame(Logistic = get.w(mod_match[[k]]),
+                                               Mahalanobis = get.w(mod_mahalo[[k]]),
+                                               CBPS.over = get.w(cbps.over[[k]]),
+                                               CBPS.just = get.w(cbps.just[[k]]),
+                                               EB = df[[k]]$wt.eb,
+                                               EB2 = df[[k]]$wt.eb2),
+                          m.threshold = 0.1), 
+                  var.order = "unadjusted",
+                  abs = FALSE, colors = c("red", "brown", "purple", "cyan", 
+                                          "blue", "orange", "pink"), 
+                  shapes = c("circle open", "square open", 
+                             "square open", "triangle open", 
+                             "triangle open", "circle open", "diamond open"),
+                  stat = c('mean.diffs'),
+                  line = TRUE) +
+          theme_gray() + 
+          labs(title=paste('covariate balance: simulation',k),
+               subtitle=dgp_names[k]) +
+    xlim(-0.52,1)
+}
+```
+
+```{r echo = FALSE}
+ggarrange(love.plots[[1]],love.plots[[2]], ncol=1, nrow=2, common.legend = TRUE, legend="right")
+ggarrange(love.plots[[5]],love.plots[[6]], ncol=1, nrow=2, common.legend = TRUE, legend="right")
+```
+
+#### Analysis of Mean Differences:
+
+- Entropy balancing shows the best performance with respect to balancing covariate means. For all 4 simulations, the standardized mean difference is approximately zero for all covariates. 
+- The CBPS just-identified model similarly achieves perfectly balanced covariate means. 
+- The CBPS over-identified model performs significantly better in simulations where the true propensity score model is non-linear and worse in simulations where the true propensity score model is linear, which seems counter-intuitive. In fact, for both simulations with a non-linear true propensity score model, the CBPS over-identified model achieves nearly 0 mean difference for all covariates, where as mean differences remain large for both simulations with linear true propensity score model. One observation is that when the true propensity score model is linear, the covariates' mean differences are similar to the covariates' mean differences under the logistic model. Recall that the over-identified model combines the propensity score and covariate balancing conditions whereas the just-identified model only contains covariate balancing conditions. It seems likely that when the true propensity score model is linear in the covariates, the propensity score condition "dominates" the covariate balancing conditions, so the CBPS over-identified model's performance resembles the logistic baseline model's results. For the simulations with a non-linear propensity score model, the propensity score condition no longer dominates, so the CBPS over-identified model's performance resembles the just-identified model's results.
+- The logistic regression and mahalanobis matching methods show strong performance in simulation 1, where the pre-treatment covariates have standard normal distributions. Performance appears to weaken after including count variables and when the true propensity score model is non-linear. 
+
+
+```{r loveplots2, message=FALSE, eval=FALSE, include = FALSE}
+love.plots.var=list()
+
+for(k in 1:8){
+  formula = as.formula(paste('treat ~ ',paste(confounders[[k]],collapse=' + '),sep=''))
+  love.plots.var[[k]] = love.plot(bal.tab(formula, 
+                          data = df[[k]][,c('treat',confounders[[k]])], 
+                          weights = data.frame(Logistic = get.w(mod_match[[k]]),
+                                               Mahalanobis = get.w(mod_mahalo[[k]]),
+                                               CBPS.over = get.w(cbps.over[[k]]),
+                                               CBPS.just = get.w(cbps.just[[k]]),
+                                               EB = df[[k]]$wt.eb,
+                                               EB2 = df[[k]]$wt.eb2),
+                          m.threshold = 0.1), 
+                  var.order = "unadjusted",
+                  abs = FALSE, colors = c("red", "brown", "purple", 
+                                          "cyan", "blue", "orange", "pink"), 
+                  shapes = c("circle open", "square open", 
+                             "square open", "triangle open",
+                             "triangle open", "circle open", "diamond open"),
+                  stat = c('variance.ratios'),
+                  line = TRUE) +
+          theme_gray() + 
+          labs(title=paste('covariate balance: simulation',k),
+               subtitle=dgp_names[k])+
+  xlim(1,2)
+}
+```
+
+```{r echo = FALSE}
+ggarrange(love.plots.var[[1]],love.plots.var[[2]], ncol=1, nrow=2, common.legend = TRUE, legend="right")
+ggarrange(love.plots.var[[5]],love.plots.var[[6]], ncol=1, nrow=2, common.legend = TRUE, legend="right")
+
+```
+
+
+#### Analysis of Variance Ratios:
+
+- The Entropy Balancing model where I have set both first and second moment conditions (EB 2) is the only model that consistently achieves variance ratios = 1. The other models' ability to obtain similar variances of matched samples across treatment groups is rather sporadic. 
+
+
+
+#### Results:
+
+
+```{r simulations, eval=FALSE, include = FALSE}
+for(k in 1:8){
+
+  # For Debugging
+  print(k)
+
+  # Initialize Matrices to Store Results for Mean Difference and Linear Regression
+  md_results  = matrix(nrow=n_sims,
+                       ncol=length(model_names),
+                       dimnames = list(1:n_sims,model_names))
+
+  lin_results = matrix(nrow=n_sims,
+                       ncol=length(model_names),
+                       dimnames = list(1:n_sims,model_names))
+
+  df.temp = df[[k]]
+
+  for(i in 1:n_sims){
+
+    formula = as.formula(paste('treat ~ ',paste(confounders[[k]],collapse=' + '),sep=''))
+
+    # Generate treatment vector
+    df.temp$treat = as.integer(runif(n) <= df.temp$e_Z)
+    df.temp$y = df.temp$y_0*(1-df.temp$treat) + df.temp$y_1*df.temp$treat
+
+    # Logistic Regression, 1-1 Matching
+    mod_match = matchit(formula,
+                        data = df.temp,
+                        method = 'nearest',
+                        distance = 'logit',
+                        replace = TRUE)
+    df.temp$wt = mod_match$weights
+
+    # Mahalanobis Distance Matching
+    mod_mahalo = matchit(formula,
+                         data = df.temp,
+                         method = "nearest",
+                         distance = "mahalanobis",
+                         replace = TRUE)
+    df.temp$wt_mh = mod_mahalo$weights
+
+    # CBPS Weights (OVER)
+    cbps.over = weightit(formula,
+                         data = df.temp,
+                         method = "cbps",
+                         estimand = "ATT",
+                         over=TRUE)
+    df.temp$wt.cbps_over = cbps.over$weights
+
+    # CBPS Weights (JUST)
+    cbps.just = weightit(formula,
+                         data = df.temp,
+                         method = "cbps",
+                         estimand = "ATT",
+                         over=FALSE)
+    df.temp$wt.cbps_just = cbps.just$weights
+
+    # Entropy Balancing Weights 1
+    eb.out = ebalance(Treatment = df.temp$treat,
+                      X = df.temp[,confounders[[k]]])
+    df.temp$wt.eb = 1
+    df.temp[df.temp$treat == 0,'wt.eb'] = eb.out$w
+
+    # Entropy Balancing Weights 2
+    eb.out2 = ebalance(Treatment = df.temp$treat,
+                      X = cbind(df.temp[,confounders[[k]]],
+                                df.temp[,confounders[[k]]]^2))
+    df.temp$wt.eb2 = 1
+    df.temp[df.temp$treat == 0,'wt.eb2'] = eb.out2$w
+
+    # Weighted Mean Differences
+    ##############################
+
+    trt=df.temp$treat==1
+    ctrl=df.temp$treat==0
+
+    df.trt = df.temp[trt,]
+    df.ctrl = df.temp[ctrl,]
+
+    for(j in 1:length(wts)){
+      md_results[i,j] = weighted.mean(df.trt$y, df.trt[,wts[j]]) - 
+        weighted.mean(df.ctrl$y, df.ctrl[,wts[j]])
+    }
+
+    # Linear Regression
+    ##############################
+
+    for(j in 1:length(wts)){
+      lm.mod = lm(y ~ .,
+                  data = df.temp[,c('y','treat',confounders[[k]])],
+                  weights = df.temp[,wts[j]])
+      lin_results[i,j] = summary(lm.mod)$coefficients['treat','Estimate']
+    }
+
+
+  }
+
+  save(lin_results, md_results, SATE, 
+       file = paste('sim',k,'_n',n,'_nsims',n_sims,'_nlo',nlo,'.RDATA',sep=''))
+}
+```
+
+
+```{r, include = FALSE}
+model_names = c('Logit', 'Mahalo.',
+                'CBPS 1', 'CBPS 2',
+                'EB - 1', 'EB - 2')
+
+lin_CI1 = lin_mse1 = lin_bias1 = linCIcov1 = matrix(nrow=4,
+                            ncol=length(model_names),
+                            dimnames = list(paste('sim',1:4),model_names))
+
+results_1 = list()
+SATE_1 = list()
+
+k_s = c(1,2,5,6)
+for(k in 1:4){
+  load(paste('sim_results/sim',k_s[k],'_n2000_nsims1000_nloFALSE.RDATA',sep=''))
+  colnames(lin_results) = model_names
+  lin_bias1[k,] = (SATE[[k]] - apply(lin_results,2,mean)) / SATE[[k]]
+  lin_mse1[k,] = apply((SATE[[k]]-lin_results)^2,2,mean)
+  lin_CI1[k,] = apply(ci_results,2,mean)
+  results_1[[k]] = melt(lin_results)
+  SATE_1[[k]] = SATE[[k]]
+}
+
+lin_CI2 = lin_mse2 = lin_bias2 = linCIcov2 = matrix(nrow=4,
+                            ncol=length(model_names),
+                            dimnames = list(paste('sim',1:4),model_names))
+
+results_2 = list()
+SATE_2 = list()
+
+for(k in 1:4){
+  load(paste('sim_results/sim',k_s[k],'_n2000_nsims1000_nloTRUE.RDATA',sep=''))
+  colnames(lin_results) = model_names
+  lin_bias2[k,] = (SATE[[k]] - apply(lin_results,2,mean)) / SATE[[k]]
+  lin_mse2[k,] = apply((SATE[[k]]-lin_results)^2,2,mean)
+  lin_CI2[k,] = apply(ci_results,2,mean)
+  results_2[[k]] = melt(lin_results)
+  SATE_2[[k]] = SATE[[k]]
+}
+
+```
+
+Below, the first three tables display results from the 4 simulations for which the *true outcome model is linear*. The latter three tables show the equivalent results, except with a *non-linear true outcome model*. I also plot these tables so that it's easier to visually inspect model results across simulations.
+
+Caution: we should only compare models (columns) given a row (simulation). For example, based on Table 3, it is incorrect to claim that "Simulation #2 (multivariate normal covariates with misspecified propensity score model) has lower RMSE than Simulation #1 (multivariate normal covariates with correctly specified propensity score model)". This result can quickly be reversed by changing the specification of the true propensity score model. Rather, we are interested in how the models' performances (e.g. CBPS 1 vs EB-1) given a simulation.
+
+```{r echo = FALSE}
+p1 = p2 = p3 = list()
+p1[[1]] = ggplot(melt(lin_bias1), aes(x=Var2, y=abs(value), group=Var1, fill=Var1)) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  labs(y='bias')
+
+
+p1[[2]] = ggplot(melt(lin_mse1), aes(x=Var2, y=abs(value), group=Var1, fill=Var1)) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  labs(y='RMSE',
+       title='Linear Outcome Model')
+
+p1[[3]] = ggplot(melt(lin_CI1), aes(x=Var2, y=abs(value), group=Var1, fill=Var1)) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  labs(y='% iterations in 95%-CI')
+
+
+p2[[1]] = ggplot(melt(lin_bias2), aes(x=Var2, y=abs(value), group=Var1, fill=Var1)) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  labs(y='bias')
+
+p2[[2]] = ggplot(melt(lin_mse2), aes(x=Var2, y=abs(value), group=Var1, fill=Var1)) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  labs(y='RMSE',
+       title='Non-Linear Outcome Model')
+
+p2[[3]] = ggplot(melt(lin_CI2), aes(x=Var2, y=abs(value), group=Var1, fill=Var1)) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  labs(y='% iterations in 95%-CI')
+
+
+grid_arrange_shared_legend <- function(...) {
+    plots <- list(...)
+    g <- ggplotGrob(plots[[1]] + theme(legend.position="bottom"))$grobs
+    legend <- g[[which(sapply(g, function(x) x$name) == "guide-box")]]
+    lheight <- sum(legend$height)
+    grid.arrange(
+        do.call(arrangeGrob, lapply(plots, function(x)
+            x + theme(legend.position="none"))),
+        legend,
+        ncol = 1,
+        heights = unit.c(unit(1, "npc") - lheight, lheight))
+}
+```
+
+#### Linear Outcome Model:
+
+For this first set of simulations, Mahalanobis has the lowest RMSE for 2 out of 4 simulations. Both of these simulations have a linear true propensity score model. When the true propensity score model is non-linear (#2 and #4), Mahalanobis does better than Logit but worse than CBPS and EB.
+
+All models do better than the baseline logit model (keeping in mind that this baseline model made no attempt to improve the propensity score estimation model).
+
+Comparing CBPS and EB, the over-identified CBPS model (CBPS 1) either ties or out-performs the other specifications of CBPS and EB. CBPS does better when it exploits the dual specification (over-identified) than when it solely balances covariates (just-identified). 
+
+As cautioned above, these plots do not suggest that CBPS and EB models underperform for Simulation #3. Simulation #3 is equivalent to #4, except that the true propensity score model is LINEAR for #3 and NON-LINEAR for #4. So the expectation (all else equal) would be that the models would perform better when the true propensity score model is linear. But all else is NOT equal, the DGP (i.e. distributions of the true propensity scores) differ across simulations. 
+
+The third graph shows the percentage of iterations in which the true SATT (Sample Average Treatment Estimate on the Treated) falls inside the 95% confidence interval of estimated SATT. These results are much more discouraging for CBPS and EB. They appear to trivially improve upon the baseline logit model (if at all) and for simulations #1 and #3, perform much worse than the Mahalanobis estimate. 
+
+```{r echo=FALSE}
+kable(round(lin_bias1,3), 
+      caption='Linear Outcome Model -- Linear Regression: Bias')
+kable(round(sqrt(lin_mse1),3),
+      caption='Linear Outcome Model -- Linear Regression: RMSE')
+kable(lin_CI1,
+      caption='Linear Outcome Model -- Linear Regression: CI - 95%')
+
+p1[[2]]
+ggarrange(p1[[1]],p1[[3]], ncol=1, nrow=2, common.legend = TRUE, legend="right")
+```
+
+#### Non-Linear Outcome Model:
+
+Comparison of RMSE results in the same patterns as the Linear-Outcome case above. Mahalanobis does better the other models when the true propensity score model is linear. With a non-linear true propensity score model, CBPS and EB both achiever lower RMSE than Logit and Mahalanobis. Once again, the CBPS-1 model does at least as well as any of the other CBPS or EB models. 
+
+Similar to the previous result, CPBS and EB do not appear to do much better than Logit with respect to % of iterations capturing true SATT within a 95% confidence interval of estimated SATT. 
+
+```{r echo=FALSE}
+kable(round(lin_bias2,3), 
+      caption='Non-Linear Outcome Model -- Linear Regression: Bias')
+kable(round(sqrt(lin_mse2),3),
+      caption='Non-Linear Outcome Model -- Linear Regression: RMSE')
+kable(lin_CI2,
+      caption='Non-Linear Outcome Model -- Linear Regression: CI - 95%')
+
+p2[[2]]
+ggarrange(p2[[1]],p2[[3]], ncol=1, nrow=2, common.legend = TRUE, legend="right")
+```
+
+
+
+
+***
+
+## Brief Application to IHDP Data:
+
+In this section, I apply the matching and reweighting methods to evaluate the Infant Health and Development Program (IHDP). 
+
+The dataset for this section is from homework 4. The dataset contains personal details about approximately 4500 children born in the 1980s and their mothers. Of these 4500, 290 received the treatment: IHDP. IHDP provides special services for the children who receive treatment, such as high-quality child care in the second and third years of life. Treatment was not randomly assigned, but rather, to children who were born (1) prematurely, (2) with low birth weight (1500-2500 grams), and (3) lived in one of the eight cities where the intervention took place. The outcome of interest is a test score conducted at age 3 (similar to an IQ measure). 
+
+```{r, warning=FALSE, eval=FALSE, include = FALSE}
+load('data/hw4.Rdata')
+df.ihdp = hw4
+
+col_names = colnames(df.ihdp)
+cols_to_keep = col_names[!col_names %in% c('treat','ppvtr.36','white',
+                                           'ltcoll','bwg','momed','st99')]
+ihdp.formula = formula(paste('treat ~ ',paste(cols_to_keep,collapse = ' + ')))
+
+# Logistic Regression, 1-1 Matching
+ihdp.log = matchit(ihdp.formula, 
+                   data = df.ihdp, 
+                   method = 'nearest', 
+                   distance = 'logit', 
+                   replace = TRUE)
+df.ihdp$wt = ihdp.log$weights
+
+# Mahalanobis Distance Matching
+ihdp.mh = matchit(ihdp.formula, 
+                  data = df.ihdp, 
+                  method = "nearest", 
+                  distance = "mahalanobis", 
+                  replace = TRUE)
+df.ihdp$wt_mh = ihdp.mh$weights
+    
+# CBPS Weights (OVER)
+ihdb.cbps_o = weightit(ihdp.formula, 
+                       data = df.ihdp, 
+                       method = "cbps", 
+                       estimand = "ATT", 
+                       over=TRUE)
+df.ihdp$wt.cbps_over = ihdb.cbps_o$weights
+
+# CBPS Weights (JUST)
+ihdb.cbps_j = weightit(ihdp.formula, 
+                       data = df.ihdp, 
+                       method = "cbps", 
+                       estimand = "ATT", 
+                       over=FALSE)
+df.ihdp$wt.cbps_just = ihdb.cbps_j$weights
+
+# Entropy Balancing Weights
+ihdp.eb = ebalance(Treatment = df.ihdp$treat, 
+                   X = df.ihdp[,cols_to_keep])
+df.ihdp$wt.eb = 1
+df.ihdp[df.ihdp$treat == 0,'wt.eb'] = ihdp.eb$w
+```
+
+```{r ihdp_plot, eval=FALSE, include = FALSE}
+ihdp_plot = love.plot(bal.tab(covs = df.ihdp[,cols_to_keep],
+                  treat = df.ihdp$treat,
+                  data = df.ihdp[,c('treat',cols_to_keep)],
+                  weights = data.frame(Logistic = get.w(ihdp.log),
+                                       Mahalanobis = get.w(ihdp.mh),
+                                       CBPS_j = get.w(ihdb.cbps_j),
+                                       CBPS_o = get.w(ihdb.cbps_o),
+                                       EB = df.ihdp$wt.eb)),
+          var.order = "unadjusted",
+          abs = TRUE, 
+          line = TRUE,
+          colors = c("red", "blue", "purple", 
+                     "darkgreen","brown", "orange"),
+          shapes = c("circle open", "square open", 
+                     "triangle open","triangle open", 
+                     "circle open", "diamond open")) +
+  xlim(0,0.75) +
+  labs(title=paste('covariate balance: ihdp data')) +
+  aes(alpha=0.7)
+```
+
+```{r echo = FALSE}
+print(ihdp_plot)
+```
+
+Similar to the results from the previous simulations, the entropy balancing model achieves the best balance on the covariates. 
+
+```{r ihdp_results, eval=FALSE, include = FALSE}
+# Linear Regression
+##############################
+wts2 = c('wt','wt_mh','wt.cbps_over','wt.cbps_just','wt.eb')
+ihdp_lin_b = ihdp_lin_se = c()
+for(j in 1:length(wts2)){
+  lm.mod = lm(ppvtr.36 ~ ., 
+              data = df.ihdp[,c('ppvtr.36','treat',cols_to_keep)], 
+              weights = df.ihdp[,wts2[j]])  
+  ihdp_lin_b[j] = summary(lm.mod)$coefficients['treat','Estimate']
+  ihdp_lin_se[j] = summary(lm.mod)$coefficients['treat','Std. Error']
+}
+```
+
+
+```{r echo = FALSE}
+kable(ihdp_results)
+```
+
+```{r include = FALSE}
+save(true_prs_density, love.plots, love.plots.var, ihdp_plot, ihdp_results, file='sim_study_plots.RDATA')
+```
+
+## Conclusion and Limitations:
+
+These results suggest that CBPS and EB may not be a better method for using matching to estimate treatment effects compared to using Mahalanobis distance. It's likely that this result is due to the fact that all four simulations use data generating processes that do not cause major problems for the Mahalanobis Matching method. Even so, the DGP of this study are not radical by any means and these results are significantly different from Hainmueller's results: MSE from entropy balancing that was 3.4 times lower than Mahalanobis matching and 4.6 times lower than matching on the estimated propensity score.
+
+It would be worthwhile to further study the discrepancies between this simulation study and Imai (CBPS) and Hainmueller (EB) results. There is a lot of arbitrariness to setting up the DGP for these simulations. We know that slight misspecifications of the propensity score model can lead to severe biases in treatment effect estimation. Similarly, it seems that slight tweaks in the data generating processes can lead to different outcomes. Perhaps it would be a good idea to design a simulation study that analyzes thousands of iterations of thousands of DGPs. Though I considered this, each simulation already took ~1.5 hours each using NYU's high performance clusters. Repeating each of these simulations ~1000 times was possible but I didn't want to risk waiting to the last minute to write up results. 
+
+Next, I would also like to spend some more time gaining a deeper understanding of Equal Percentage Bias Reduction and its implications. For CBPS, I still need to learn how the model actually estimates the weights (generalized method of moments). When does it favor the covariate balancing constraint over the propensity score estimation and vice versa? 
+
+
+
+
+## References:
+
+- Diamond, A. and Sekhon, J. 2012. Genetic matching for estimating causal effects: a new method of achieving balance in observational studies.
+- Hainmueller, Jens. 2012. “Entropy Balancing for Causal Effects: A Multivariate Reweighting Method to Produce Balanced Samples in Observational Studies.” Political Analysis 20(1): 25–46.
+- Imai, K., King, G. and Stuart, E. A. 2008. Misunderstandings between experimentalists and observationalists about causal inference. J. R. Statist. Soc. A, 171, 481–502.
+- Imai, Kosuke, and Marc Ratkovic. 2014. “Covariate Balancing Propensity Score.” Journal of the Royal Statistical Society: Series B (Statistical Methodology) 76(1): 243–63.
+- Rosenbaum, Paul R. and Donald B. Rubin. 1983. “The Central Role of the Propensity Score in Observational Studies for Causal Effects.” Biometrika 70 (1): 41–55.
+- Rubin, Donald B. 1976a. “Multivariate Matching Methods That are Equal Percent Bias Reducing, I: Some Examples.” Biometrics 32 (1): 109–120.
+
+
+
+
+
+

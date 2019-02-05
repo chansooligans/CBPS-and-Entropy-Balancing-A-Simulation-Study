@@ -1,0 +1,192 @@
+---
+title: "Untitled"
+author: "Chansoo Song"
+date: "11/20/2018"
+output: html_document
+---
+
+
+```{r}
+baltab=list()
+for(k in 1:4){
+  baltab[[k]]=list()
+  baltab[[k]][[1]] = bal.tab(data = df[[k]],
+                            covs = df[[k]][,confounders[[k]]],
+                            treat = df[[k]]$treat,
+                            weights = df[[k]]$wt,
+                            method = 'weighting',
+                            disp.v.ratio = TRUE,
+                            un = TRUE,
+                            m.threshold = 0.1,
+                            v.threshold = 1.1,
+                            estimand = 'ATT')
+  
+  baltab[[k]][[2]] = bal.tab(mod_mahalo[[k]],
+                           disp.v.ratio = TRUE,
+                           un = TRUE,
+                           m.threshold = 0.1,
+                           v.threshold = 1.1,
+                           estimand = 'ATT')
+  
+  baltab[[k]][[3]] = bal.tab(cbps.over[[k]],
+                           disp.v.ratio = TRUE,
+                           un = TRUE,
+                           m.threshold = 0.1,
+                           v.threshold = 1.1,
+                           estimand = 'ATT')
+  
+  baltab[[k]][[4]] = bal.tab(cbps.just[[k]],
+                           disp.v.ratio = TRUE,
+                           un = TRUE,
+                           m.threshold = 0.1,
+                           v.threshold = 1.1,
+                           estimand = 'ATT')
+
+  baltab[[k]][[5]] = bal.tab(eb.out[[k]],
+                           treat = df[[k]]$treat,
+                           covs = df[[k]][,confounders[[k]]],
+                           disp.v.ratio = TRUE,
+                           un = TRUE,
+                           m.threshold = 0.1,
+                           v.threshold = 1.1,
+                           estimand = 'ATT')
+  
+  # Initialize List of Plots
+  love.plots[[k]] = list()
+  
+  # Plots
+  for(j in 1:length(model_names)){
+    if(j<length(model_names)){
+      love.plots[[k]][[j]] = love.plot(baltab[[k]][[j]], threshold = 0.1) + 
+        ggtitle(paste('covariate balance:',model_names[j])) +
+        theme(plot.title = element_text(size=8),
+              axis.title.x=element_blank(),
+              axis.text.x=element_blank(),
+              axis.ticks.x=element_blank()) +
+        xlim(0,1)  
+    } else if(j==length(model_names)){
+      love.plots[[k]][[j]] = love.plot(baltab[[k]][[j]], threshold = 0.1) + 
+        ggtitle(paste('covariate balance:',model_names[j])) +
+        theme(plot.title = element_text(size=8),
+              axis.title.x = element_text(size=6)) +
+        xlim(0,1)
+    }
+  }
+  
+}
+
+
+for(k in 1:4){
+  grid.arrange(grobs=love.plots[[k]][1:4], ncol=1, nrow = 4, 
+               top=paste("Simulation",k)) 
+  grid.arrange(grobs=love.plots[[k]][5], ncol=1, nrow = 3)
+}
+
+```
+
+
+
+
+```{r}
+k=1
+for(k in 1:8){
+  load(paste('sim',k,'_n500_nsims200_nloFALSE.RDATA',sep=''))
+  par(col='dark grey')
+  plot(density(baseline_coefs), ylim=c(0,10), xlim=c(3.8,4.2),main=paste('Dists of Treatment Eff Est for Simulation', k))
+  abline(v=mean(baseline_coefs), col='black', lty=2)
+  lines(density(baseline_mh), col = 'purple')
+  abline(v=mean(baseline_mh), col='purple', lty=2)
+  lines(density(cbps_coefs_over), col = 'orange')
+  abline(v=mean(cbps_coefs_over), col='orange', lty=2)
+  lines(density(cbps_coefs_just), col = 'red')
+  abline(v=mean(cbps_coefs_just), col='red', lty=2)
+  lines(density(eb_coefs), col = 'green')
+  abline(v=mean(eb_coefs), col='green', lty=2)
+  abline(v=mean(SATE[[k]]), col='red', lty=2)
+}
+
+
+for(k in 1:8){
+  load(paste('sim',k,'_n500_nsims200_nloTRUE.RDATA',sep=''))
+  par(col='dark grey')
+  plot(density(baseline_coefs), ylim=c(0,10), xlim=c(3.8,4.2),main=paste('Dists of Treatment Eff Est for Simulation', k))
+  abline(v=mean(baseline_coefs), col='black', lty=2)
+  lines(density(baseline_mh), col = 'purple')
+  abline(v=mean(baseline_mh), col='purple', lty=2)
+  lines(density(cbps_coefs_over), col = 'orange')
+  abline(v=mean(cbps_coefs_over), col='orange', lty=2)
+  lines(density(cbps_coefs_just), col = 'red')
+  abline(v=mean(cbps_coefs_just), col='red', lty=2)
+  lines(density(eb_coefs), col = 'green')
+  abline(v=mean(eb_coefs), col='green', lty=2)
+  abline(v=mean(SATE[[k]]), col='red', lty=2)
+}
+```
+
+
+
+```{r}
+balplots = list()
+
+for(k in 1:4){
+  balplots[[k]] = list()
+  
+  covs = ncol(mod_match[[k]]$X)
+  model_n = 4
+  idx = seq(0,model_n*covs-1,by=4)
+  
+  # Unadjusted plots
+  for(i in 1:length(idx)){
+    balplots[[k]][[idx[i]+1]] = bal.plot(mod_match[[k]],treat = df[[k]]$treat,covs = df[[k]][,confounders[[k]]],
+         var.name = confounders[[3]][i],which='unadjusted',type='histogram') +
+    guides(fill=FALSE) +
+    theme(plot.title = element_text(size=8)) +
+    ggtitle(paste('z1',confounders[[3]][i]))
+  }
+
+  for(i in 1:length(idx)){
+    balplots[[k]][[idx[i]+2]] = bal.plot(mod_match[[k]],treat = df[[k]]$treat,covs = df[[k]][,confounders[[k]]],
+         var.name = confounders[[3]][i],type='histogram') +
+    guides(fill=FALSE) +
+    theme(plot.title = element_text(size=8)) +
+    ggtitle('Baseline')
+  }
+
+  for(i in 1:length(idx)){
+    balplots[[k]][[idx[i]+3]] = bal.plot(cbps.over[[k]],treat = df[[k]]$treat,covs = df[[k]][,confounders[[k]]],
+         var.name = confounders[[3]][i],type='histogram') +
+    guides(fill=FALSE) +
+    theme(plot.title = element_text(size=8)) +
+    ggtitle('CBPS')
+  }
+
+  for(i in 1:length(idx)){
+    balplots[[k]][[idx[i]+4]] = bal.plot(eb.out[[k]],treat = df[[k]]$treat,covs = df[[k]][,confounders[[k]]],
+         var.name = confounders[[3]][i],type='histogram') +
+    guides(fill=FALSE) +
+    theme(plot.title = element_text(size=8)) +
+    ggtitle('EB')
+  }
+}
+
+grid.arrange(grobs=balplots[[1]][1:8], ncol=4, nrow = 2,
+               top="Simulation 1")
+grid.arrange(grobs=balplots[[1]][9:12], ncol=4, nrow = 2)
+
+grid.arrange(grobs=balplots[[2]][1:8], ncol=4, nrow = 2,
+               top="Simulation 2")
+grid.arrange(grobs=balplots[[2]][9:12], ncol=4, nrow = 2)
+
+grid.arrange(grobs=balplots[[3]][1:8], ncol=4, nrow = 2,
+               top="Simulation 3")
+grid.arrange(grobs=balplots[[3]][9:16], ncol=4, nrow = 2)
+grid.arrange(grobs=balplots[[3]][17:24], ncol=4, nrow = 2)
+
+
+grid.arrange(grobs=balplots[[4]][1:8], ncol=4, nrow = 2,
+               top="Simulation 4")
+grid.arrange(grobs=balplots[[4]][9:16], ncol=4, nrow = 2)
+grid.arrange(grobs=balplots[[4]][17:24], ncol=4, nrow = 2)
+```
+
+
